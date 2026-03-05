@@ -1,0 +1,1617 @@
+openapi: 3.0.3
+info:
+  title: Volta API
+  version: 1.0.0
+  description: |
+    REST API for the Volta e-commerce platform.
+
+    **Authentication:** Session-based (PHP session cookie).
+    - Call `POST /api/login` to obtain a session.
+    - Protected endpoints require either **Admin** or **Login** role as noted.
+
+servers:
+  - url: /volta/public
+    description: Local XAMPP (default)
+
+tags:
+  - name: Auth
+    description: Login, signup, logout, current user
+  - name: Users
+    description: Admin – user management
+  - name: Products
+    description: Admin – product management
+  - name: Product Images
+    description: Admin – product image management
+  - name: Product Relations
+    description: Admin – related product management
+  - name: Categories
+    description: Category management
+  - name: Discounts
+    description: Admin – discount / coupon management
+  - name: Admin Orders
+    description: Admin – order management
+  - name: Bundles
+    description: Admin – bundle management
+  - name: Shop
+    description: Public storefront endpoints
+  - name: Cart
+    description: Authenticated customer cart
+  - name: My Orders
+    description: Authenticated customer order history
+  - name: Profile
+    description: Authenticated customer profile & addresses
+
+# ─────────────────────────────────────────────────────────────
+# Reusable components
+# ─────────────────────────────────────────────────────────────
+components:
+  # ── Schemas ────────────────────────────────────────────────
+  schemas:
+    # API wrapper shapes
+    SuccessResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        message: { type: string, example: "OK" }
+        data: {}
+
+    ErrorResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        message: { type: string, example: "Something went wrong." }
+
+    PaginatedMeta:
+      type: object
+      properties:
+        page:  { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
+        total: { type: integer, example: 100 }
+
+    # Domain schemas
+    User:
+      type: object
+      properties:
+        id:        { type: integer }
+        email:     { type: string, format: email }
+        full_name: { type: string }
+        phone:     { type: string }
+        role:      { type: string, enum: [admin, customer] }
+        created_at: { type: string, format: date-time }
+
+    Product:
+      type: object
+      properties:
+        id:          { type: integer }
+        name:        { type: string }
+        slug:        { type: string }
+        category_id: { type: integer }
+        description: { type: string }
+        price:       { type: number, format: float }
+        stock:       { type: integer }
+        badge:       { type: string }
+        is_active:   { type: boolean }
+        created_at:  { type: string, format: date-time }
+
+    ProductImage:
+      type: object
+      properties:
+        id:         { type: integer }
+        product_id: { type: integer }
+        url:        { type: string }
+        is_primary: { type: boolean }
+
+    ProductRelation:
+      type: object
+      properties:
+        id:                 { type: integer }
+        product_id:         { type: integer }
+        related_product_id: { type: integer }
+
+    Category:
+      type: object
+      properties:
+        id:          { type: integer }
+        name:        { type: string }
+        slug:        { type: string }
+        description: { type: string }
+        created_at:  { type: string, format: date-time }
+
+    Discount:
+      type: object
+      properties:
+        id:             { type: integer }
+        code:           { type: string }
+        type:           { type: string, enum: [percentage, fixed] }
+        value:          { type: number, format: float }
+        min_order:      { type: number, format: float }
+        max_uses:       { type: integer }
+        used_count:     { type: integer }
+        expires_at:     { type: string, format: date-time, nullable: true }
+        is_active:      { type: boolean }
+
+    Order:
+      type: object
+      properties:
+        id:          { type: integer }
+        user_id:     { type: integer }
+        address_id:  { type: integer, nullable: true }
+        status:      { type: string, enum: [pending, processing, shipped, delivered, cancelled] }
+        total_price: { type: number, format: float }
+        created_at:  { type: string, format: date-time }
+
+    OrderItem:
+      type: object
+      properties:
+        id:          { type: integer }
+        order_id:    { type: integer }
+        product_id:  { type: integer }
+        quantity:    { type: integer }
+        unit_price:  { type: number, format: float }
+
+    Bundle:
+      type: object
+      properties:
+        id:          { type: integer }
+        name:        { type: string }
+        slug:        { type: string }
+        description: { type: string }
+        price:       { type: number, format: float }
+        is_active:   { type: boolean }
+        created_at:  { type: string, format: date-time }
+
+    BundleItem:
+      type: object
+      properties:
+        id:         { type: integer }
+        bundle_id:  { type: integer }
+        product_id: { type: integer }
+        quantity:   { type: integer }
+
+    CartItem:
+      type: object
+      properties:
+        id:            { type: integer }
+        product_id:    { type: integer }
+        quantity:      { type: integer }
+        product_name:  { type: string }
+        product_slug:  { type: string }
+        product_price: { type: number, format: float }
+        product_stock: { type: integer }
+        image_url:     { type: string, nullable: true }
+        line_total:    { type: number, format: float }
+
+    Address:
+      type: object
+      properties:
+        id:         { type: integer }
+        user_id:    { type: integer }
+        label:      { type: string }
+        street:     { type: string }
+        city:       { type: string }
+        country:    { type: string }
+        is_default: { type: boolean }
+
+  # ── Common parameters ──────────────────────────────────────
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema: { type: integer, default: 1 }
+    LimitParam:
+      name: limit
+      in: query
+      schema: { type: integer, default: 20 }
+    SearchParam:
+      name: search
+      in: query
+      schema: { type: string }
+
+  # ── Responses ──────────────────────────────────────────────
+  responses:
+    Unauthorized:
+      description: Not authenticated
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+# ─────────────────────────────────────────────────────────────
+# Paths
+# ─────────────────────────────────────────────────────────────
+paths:
+
+  # ══════════════════════════════════════════════════════════
+  # AUTH
+  # ══════════════════════════════════════════════════════════
+
+  /api/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:    { type: string, format: email, example: admin@volta.com }
+                password: { type: string, example: secret }
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/User' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /api/signup:
+    post:
+      tags: [Auth]
+      summary: Register a new customer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, confirm_password]
+              properties:
+                email:            { type: string, format: email }
+                password:         { type: string }
+                confirm_password: { type: string }
+                full_name:        { type: string }
+                phone:            { type: string }
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/User' }
+        "409": { description: Email already in use }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /api/logout:
+    post:
+      tags: [Auth]
+      summary: Logout
+      responses:
+        "200": { description: Logged out }
+
+  /api/me:
+    get:
+      tags: [Auth]
+      summary: Get current authenticated user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/User' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+  # ══════════════════════════════════════════════════════════
+  # USERS  (Admin)
+  # ══════════════════════════════════════════════════════════
+
+  /api/users:
+    get:
+      tags: [Users]
+      summary: List users (Admin)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/SearchParam'
+      responses:
+        "200":
+          description: Paginated user list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/User' }
+                      meta: { $ref: '#/components/schemas/PaginatedMeta' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { $ref: '#/components/responses/Forbidden' }
+
+    post:
+      tags: [Users]
+      summary: Create user (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, role]
+              properties:
+                email:     { type: string, format: email }
+                password:  { type: string }
+                full_name: { type: string }
+                phone:     { type: string }
+                role:      { type: string, enum: [admin, customer] }
+      responses:
+        "201": { description: User created }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /api/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Users]
+      summary: Get user by ID (Admin)
+      responses:
+        "200":
+          description: User detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/User' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    put:
+      tags: [Users]
+      summary: Update user (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email:     { type: string, format: email }
+                full_name: { type: string }
+                phone:     { type: string }
+                role:      { type: string, enum: [admin, customer] }
+      responses:
+        "200": { description: User updated }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    delete:
+      tags: [Users]
+      summary: Delete user (Admin)
+      responses:
+        "200": { description: User deleted }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  # ══════════════════════════════════════════════════════════
+  # PRODUCTS  (Admin)
+  # ══════════════════════════════════════════════════════════
+
+  /api/products:
+    get:
+      tags: [Products]
+      summary: List products (Admin)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/SearchParam'
+      responses:
+        "200":
+          description: Paginated product list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Product' }
+                      meta: { $ref: '#/components/schemas/PaginatedMeta' }
+
+    post:
+      tags: [Products]
+      summary: Create product (Admin)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [name, category_id, price, stock]
+              properties:
+                name:        { type: string }
+                slug:        { type: string }
+                category_id: { type: integer }
+                description: { type: string }
+                price:       { type: number, format: float }
+                stock:       { type: integer }
+                badge:       { type: string }
+                is_active:   { type: boolean }
+                image:       { type: string, format: binary }
+      responses:
+        "201": { description: Product created }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /api/products/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Products]
+      summary: Get product by ID (Admin)
+      responses:
+        "200":
+          description: Product detail with images
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          product: { $ref: '#/components/schemas/Product' }
+                          images:
+                            type: array
+                            items: { $ref: '#/components/schemas/ProductImage' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    put:
+      tags: [Products]
+      summary: Update product (Admin)
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                name:        { type: string }
+                slug:        { type: string }
+                category_id: { type: integer }
+                description: { type: string }
+                price:       { type: number, format: float }
+                stock:       { type: integer }
+                badge:       { type: string }
+                is_active:   { type: boolean }
+                image:       { type: string, format: binary }
+      responses:
+        "200": { description: Product updated }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    delete:
+      tags: [Products]
+      summary: Delete product (Admin)
+      responses:
+        "200": { description: Product deleted }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  # ── Product Images ────────────────────────────────────────
+
+  /api/products/{id}/images:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Product Images]
+      summary: List images for a product (Admin)
+      responses:
+        "200":
+          description: Image list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ProductImage' }
+
+    post:
+      tags: [Product Images]
+      summary: Upload product image (Admin)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image: { type: string, format: binary }
+      responses:
+        "201": { description: Image uploaded }
+
+  /api/products/{id}/images/{imageId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: integer }
+
+    delete:
+      tags: [Product Images]
+      summary: Delete product image (Admin)
+      responses:
+        "200": { description: Image deleted }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /api/products/{id}/images/{imageId}/primary:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: imageId
+        in: path
+        required: true
+        schema: { type: integer }
+
+    put:
+      tags: [Product Images]
+      summary: Set image as primary (Admin)
+      responses:
+        "200": { description: Primary image updated }
+
+  # ── Product Relations ─────────────────────────────────────
+
+  /api/products/{id}/relations:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Product Relations]
+      summary: List product relations (Admin)
+      responses:
+        "200":
+          description: Relation list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ProductRelation' }
+
+    post:
+      tags: [Product Relations]
+      summary: Add product relation (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [related_product_id]
+              properties:
+                related_product_id: { type: integer }
+      responses:
+        "201": { description: Relation added }
+
+  /api/products/{id}/relations/{relId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: relId
+        in: path
+        required: true
+        schema: { type: integer }
+
+    delete:
+      tags: [Product Relations]
+      summary: Remove product relation (Admin)
+      responses:
+        "200": { description: Relation removed }
+
+  # ══════════════════════════════════════════════════════════
+  # CATEGORIES
+  # ══════════════════════════════════════════════════════════
+
+  /api/categories:
+    get:
+      tags: [Categories]
+      summary: List all categories
+      responses:
+        "200":
+          description: Category list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Category' }
+
+    post:
+      tags: [Categories]
+      summary: Create category (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:        { type: string }
+                slug:        { type: string }
+                description: { type: string }
+      responses:
+        "201": { description: Category created }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /api/categories/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Categories]
+      summary: Get category by ID
+      responses:
+        "200":
+          description: Category detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Category' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    put:
+      tags: [Categories]
+      summary: Update category (Admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:        { type: string }
+                slug:        { type: string }
+                description: { type: string }
+      responses:
+        "200": { description: Category updated }
+
+    delete:
+      tags: [Categories]
+      summary: Delete category (Admin)
+      responses:
+        "200": { description: Category deleted }
+
+  # ══════════════════════════════════════════════════════════
+  # DISCOUNTS  (Admin)
+  # ══════════════════════════════════════════════════════════
+
+  /api/discounts:
+    get:
+      tags: [Discounts]
+      summary: List all discounts (Admin)
+      responses:
+        "200":
+          description: Discount list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Discount' }
+
+    post:
+      tags: [Discounts]
+      summary: Create discount (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, type, value]
+              properties:
+                code:       { type: string }
+                type:       { type: string, enum: [percentage, fixed] }
+                value:      { type: number, format: float }
+                min_order:  { type: number, format: float }
+                max_uses:   { type: integer }
+                expires_at: { type: string, format: date-time }
+                is_active:  { type: boolean }
+      responses:
+        "201": { description: Discount created }
+
+  /api/discounts/valid:
+    get:
+      tags: [Discounts]
+      summary: List currently valid (active & non-expired) discounts (Admin)
+      responses:
+        "200":
+          description: Valid discount list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Discount' }
+
+  /api/discounts/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Discounts]
+      summary: Get discount by ID (Admin)
+      responses:
+        "200":
+          description: Discount detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Discount' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    put:
+      tags: [Discounts]
+      summary: Update discount (Admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code:       { type: string }
+                type:       { type: string, enum: [percentage, fixed] }
+                value:      { type: number, format: float }
+                min_order:  { type: number, format: float }
+                max_uses:   { type: integer }
+                expires_at: { type: string, format: date-time }
+                is_active:  { type: boolean }
+      responses:
+        "200": { description: Discount updated }
+
+    delete:
+      tags: [Discounts]
+      summary: Delete discount (Admin)
+      responses:
+        "200": { description: Discount deleted }
+
+  # ══════════════════════════════════════════════════════════
+  # ADMIN ORDERS
+  # ══════════════════════════════════════════════════════════
+
+  /api/admin/orders:
+    get:
+      tags: [Admin Orders]
+      summary: List orders (Admin)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, processing, shipped, delivered, cancelled] }
+      responses:
+        "200":
+          description: Paginated order list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Order' }
+                      meta: { $ref: '#/components/schemas/PaginatedMeta' }
+
+    post:
+      tags: [Admin Orders]
+      summary: Create order (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, total_price, items]
+              properties:
+                user_id:     { type: integer }
+                address_id:  { type: integer }
+                status:      { type: string, enum: [pending, processing, shipped, delivered, cancelled] }
+                total_price: { type: number, format: float }
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [product_id, quantity, unit_price]
+                    properties:
+                      product_id: { type: integer }
+                      quantity:   { type: integer }
+                      unit_price: { type: number, format: float }
+      responses:
+        "201": { description: Order created }
+
+  /api/admin/orders/stats:
+    get:
+      tags: [Admin Orders]
+      summary: Order statistics (Admin)
+      responses:
+        "200":
+          description: Aggregated order stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /api/admin/orders/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Admin Orders]
+      summary: Get order with items (Admin)
+      responses:
+        "200":
+          description: Order detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          order: { $ref: '#/components/schemas/Order' }
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/OrderItem' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    put:
+      tags: [Admin Orders]
+      summary: Update order (Admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:      { type: string, enum: [pending, processing, shipped, delivered, cancelled] }
+                address_id:  { type: integer }
+                total_price: { type: number, format: float }
+      responses:
+        "200": { description: Order updated }
+
+    delete:
+      tags: [Admin Orders]
+      summary: Delete order (Admin)
+      responses:
+        "200": { description: Order deleted }
+
+  /api/admin/orders/{id}/status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    put:
+      tags: [Admin Orders]
+      summary: Update order status only (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [pending, processing, shipped, delivered, cancelled] }
+      responses:
+        "200": { description: Status updated }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  # ══════════════════════════════════════════════════════════
+  # BUNDLES
+  # ══════════════════════════════════════════════════════════
+
+  /api/bundles:
+    get:
+      tags: [Bundles]
+      summary: List all bundles (Admin)
+      responses:
+        "200":
+          description: Bundle list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Bundle' }
+
+    post:
+      tags: [Bundles]
+      summary: Create bundle (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, price]
+              properties:
+                name:        { type: string }
+                slug:        { type: string }
+                description: { type: string }
+                price:       { type: number, format: float }
+                is_active:   { type: boolean }
+      responses:
+        "201": { description: Bundle created }
+
+  /api/bundles/active:
+    get:
+      tags: [Bundles]
+      summary: List active bundles
+      responses:
+        "200":
+          description: Active bundle list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Bundle' }
+
+  /api/bundles/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Bundles]
+      summary: Get bundle by ID
+      responses:
+        "200":
+          description: Bundle detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Bundle' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    put:
+      tags: [Bundles]
+      summary: Update bundle (Admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:        { type: string }
+                slug:        { type: string }
+                description: { type: string }
+                price:       { type: number, format: float }
+                is_active:   { type: boolean }
+      responses:
+        "200": { description: Bundle updated }
+
+    delete:
+      tags: [Bundles]
+      summary: Delete bundle (Admin)
+      responses:
+        "200": { description: Bundle deleted }
+
+  /api/bundles/{id}/items:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Bundles]
+      summary: List items in a bundle
+      responses:
+        "200":
+          description: Bundle items
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/BundleItem' }
+
+    post:
+      tags: [Bundles]
+      summary: Add item to bundle (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id, quantity]
+              properties:
+                product_id: { type: integer }
+                quantity:   { type: integer, minimum: 1 }
+      responses:
+        "201": { description: Item added }
+
+  /api/bundles/{id}/items/{itemId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: itemId
+        in: path
+        required: true
+        schema: { type: integer }
+
+    delete:
+      tags: [Bundles]
+      summary: Remove item from bundle (Admin)
+      responses:
+        "200": { description: Item removed }
+
+  # ══════════════════════════════════════════════════════════
+  # SHOP  (Public)
+  # ══════════════════════════════════════════════════════════
+
+  /api/shop/products:
+    get:
+      tags: [Shop]
+      summary: List public products
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/SearchParam'
+        - name: category_id
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Public product list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Product' }
+                      meta: { $ref: '#/components/schemas/PaginatedMeta' }
+
+  /api/shop/products/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [Shop]
+      summary: Get single public product
+      responses:
+        "200":
+          description: Product detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Product' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  /api/shop/categories:
+    get:
+      tags: [Shop]
+      summary: List all categories (public)
+      responses:
+        "200":
+          description: Category list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Category' }
+
+  /api/shop/featured:
+    get:
+      tags: [Shop]
+      summary: List featured products (public)
+      responses:
+        "200":
+          description: Featured product list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Product' }
+
+  # ══════════════════════════════════════════════════════════
+  # CART  (Authenticated Customer)
+  # ══════════════════════════════════════════════════════════
+
+  /api/cart:
+    get:
+      tags: [Cart]
+      summary: Get cart contents
+      responses:
+        "200":
+          description: Cart
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/CartItem' }
+                          subtotal: { type: number, format: float }
+                          count:    { type: integer }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+    delete:
+      tags: [Cart]
+      summary: Clear entire cart
+      responses:
+        "200": { description: Cart cleared }
+
+  /api/cart/items:
+    post:
+      tags: [Cart]
+      summary: Add item to cart
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id]
+              properties:
+                product_id: { type: integer }
+                quantity:   { type: integer, minimum: 1, default: 1 }
+      responses:
+        "201":
+          description: Item added
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          cartCount: { type: integer }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+    put:
+      tags: [Cart]
+      summary: Update item quantity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id, quantity]
+              properties:
+                product_id: { type: integer }
+                quantity:   { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Quantity updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          subtotal:  { type: number, format: float }
+                          cartCount: { type: integer }
+
+  /api/cart/items/{productId}:
+    parameters:
+      - name: productId
+        in: path
+        required: true
+        schema: { type: integer }
+
+    delete:
+      tags: [Cart]
+      summary: Remove item from cart
+      responses:
+        "200":
+          description: Item removed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          subtotal:  { type: number, format: float }
+                          cartCount: { type: integer }
+
+  /api/cart/checkout:
+    get:
+      tags: [Cart]
+      summary: Get checkout summary (items + addresses)
+      responses:
+        "200":
+          description: Checkout data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/CartItem' }
+                          subtotal:  { type: number, format: float }
+                          count:     { type: integer }
+                          addresses:
+                            type: array
+                            items: { $ref: '#/components/schemas/Address' }
+        "422": { description: Cart is empty }
+
+  /api/cart/apply-discount:
+    post:
+      tags: [Cart]
+      summary: Validate and apply a discount code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [discount_code, subtotal]
+              properties:
+                discount_code: { type: string }
+                subtotal:      { type: number, format: float }
+      responses:
+        "200":
+          description: Discount applied
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          discount_amount: { type: number, format: float }
+                          total:           { type: number, format: float }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /api/cart/place-order:
+    post:
+      tags: [Cart]
+      summary: Place order from current cart
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                address_id:    { type: integer }
+                discount_code: { type: string }
+      responses:
+        "201": { description: Order placed }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  # ══════════════════════════════════════════════════════════
+  # MY ORDERS  (Customer)
+  # ══════════════════════════════════════════════════════════
+
+  /api/orders/my:
+    get:
+      tags: [My Orders]
+      summary: List current customer's orders
+      responses:
+        "200":
+          description: Order list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Order' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+  /api/orders/my/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    get:
+      tags: [My Orders]
+      summary: Get a specific customer order with items
+      responses:
+        "200":
+          description: Order detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          order: { $ref: '#/components/schemas/Order' }
+                          items:
+                            type: array
+                            items: { $ref: '#/components/schemas/OrderItem' }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+  # ══════════════════════════════════════════════════════════
+  # PROFILE  (Authenticated)
+  # ══════════════════════════════════════════════════════════
+
+  /api/profile:
+    get:
+      tags: [Profile]
+      summary: Get current user profile with addresses
+      responses:
+        "200":
+          description: Profile data
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user: { $ref: '#/components/schemas/User' }
+                          addresses:
+                            type: array
+                            items: { $ref: '#/components/schemas/Address' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+
+    put:
+      tags: [Profile]
+      summary: Update current user's profile
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name: { type: string }
+                phone:     { type: string }
+                password:  { type: string }
+      responses:
+        "200": { description: Profile updated }
+
+  /api/profile/addresses:
+    get:
+      tags: [Profile]
+      summary: List current user's addresses
+      responses:
+        "200":
+          description: Address list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Address' }
+
+    post:
+      tags: [Profile]
+      summary: Add a new address
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [street, city]
+              properties:
+                label:      { type: string }
+                street:     { type: string }
+                city:       { type: string }
+                country:    { type: string }
+                is_default: { type: boolean }
+      responses:
+        "201": { description: Address added }
+        "422": { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /api/profile/addresses/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+
+    put:
+      tags: [Profile]
+      summary: Update an address
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:      { type: string }
+                street:     { type: string }
+                city:       { type: string }
+                country:    { type: string }
+                is_default: { type: boolean }
+      responses:
+        "200": { description: Address updated }
+        "404": { $ref: '#/components/responses/NotFound' }
+
+    delete:
+      tags: [Profile]
+      summary: Delete an address
+      responses:
+        "200": { description: Address deleted }
+        "404": { $ref: '#/components/responses/NotFound' }
